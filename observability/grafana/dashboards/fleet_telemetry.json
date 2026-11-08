@@ -1,0 +1,143 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "🗺️ Mapa da Frota em Tempo Real (Última Posição por Caminhão)",
+      "type": "geomap",
+      "gridPos": { "h": 14, "w": 16, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "fleet-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT DISTINCT ON (truck_id) truck_id, latitude, longitude, speed_kmh, cargo_temp_c, fuel_level_pct, status, event_timestamp FROM truck_telemetry ORDER BY truck_id, event_timestamp DESC;"
+        }
+      ],
+      "options": {
+        "view": {
+          "id": "coords",
+          "lat": -22.8,
+          "lon": -46.2,
+          "zoom": 6
+        },
+        "basemap": {
+          "type": "osm-standard",
+          "name": "OpenStreetMap",
+          "config": {}
+        },
+        "layers": [
+          {
+            "type": "markers",
+            "name": "Caminhões Ativos",
+            "location": {
+              "mode": "coords",
+              "latitude": "latitude",
+              "longitude": "longitude"
+            },
+            "config": {
+              "style": {
+                "size": { "fixed": 7 },
+                "color": { "fixed": "dark-green" },
+                "symbol": { "fixed": "img/icons/marker/circle.svg" }
+              },
+              "showLegend": true
+            },
+            "tooltip": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "title": "🚚 Caminhões Monitorados",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "fleet-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT truck_id) AS active_trucks FROM truck_telemetry WHERE event_timestamp >= NOW() - INTERVAL '1 hour';"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "📦 Total de Eventos Ingeridos",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "fleet-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) AS total_events FROM truck_telemetry;"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "📈 Throughput de Ingestão (Eventos / 10s)",
+      "type": "timeseries",
+      "gridPos": { "h": 10, "w": 8, "x": 16, "y": 4 },
+      "datasource": { "type": "postgres", "uid": "fleet-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(event_timestamp, 10s), COUNT(*) AS events_count FROM truck_telemetry WHERE $__timeFilter(event_timestamp) GROUP BY 1 ORDER BY 1;"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "🌡️ Temperatura Média Motor vs Baú Frigorífico (°C)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "postgres", "uid": "fleet-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(event_timestamp, 10s), AVG(engine_temp_c) AS avg_engine_temp_c, AVG(cargo_temp_c) AS avg_cargo_temp_c FROM truck_telemetry WHERE $__timeFilter(event_timestamp) GROUP BY 1 ORDER BY 1;"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "⚡ Últimos Eventos de Telemetria Recebidos",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "postgres", "uid": "fleet-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT truck_id, route_id, status, speed_kmh, engine_temp_c, cargo_temp_c, fuel_level_pct, latitude, longitude, event_timestamp FROM truck_telemetry ORDER BY event_timestamp DESC LIMIT 25;"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["fleet", "telemetry", "geolocation", "kinesis"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "browser",
+  "title": "🚚 Fleet Telemetry & Geo-Location Real-Time",
+  "uid": "fleet-telemetry-realtime",
+  "version": 1
+}
+
