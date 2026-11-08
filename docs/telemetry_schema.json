@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://geolocation.fleet.local/schemas/telemetry.json",
+  "title": "TruckTelemetryPayload",
+  "description": "Schema do payload de telemetria enviado pelos caminhões em tempo real para o Gateway de Ingestão.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "truck_id",
+    "timestamp",
+    "location",
+    "speed_kmh",
+    "engine_temp_c",
+    "cargo_temp_c",
+    "fuel_level_pct",
+    "heading_deg",
+    "status"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Identificador único do evento de telemetria (UUID v4) para idempotência."
+    },
+    "truck_id": {
+      "type": "string",
+      "pattern": "^TRK-[0-9]{4,6}$",
+      "description": "Identificador único do caminhão (ex: TRK-0001). Usado como Partition Key no Kinesis."
+    },
+    "route_id": {
+      "type": "string",
+      "description": "Identificador da rota atribuída ao caminhão (ex: SP-RJ-DUTRA)."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp UTC exato gerado no hardware do caminhão no momento da coleta (ISO 8601 / RFC 3339)."
+    },
+    "location": {
+      "type": "object",
+      "required": ["latitude", "longitude"],
+      "properties": {
+        "latitude": {
+          "type": "number",
+          "minimum": -90.0,
+          "maximum": 90.0,
+          "description": "Latitude em graus decimais (WGS84)."
+        },
+        "longitude": {
+          "type": "number",
+          "minimum": -180.0,
+          "maximum": 180.0,
+          "description": "Longitude em graus decimais (WGS84)."
+        },
+        "altitude_m": {
+          "type": "number",
+          "description": "Altitude em metros acima do nível do mar."
+        }
+      }
+    },
+    "speed_kmh": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 220.0,
+      "description": "Velocidade instantânea do veículo em km/h."
+    },
+    "heading_deg": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 360.0,
+      "description": "Direção (azimute/proa) do caminhão em graus (0 = Norte, 90 = Leste)."
+    },
+    "engine_temp_c": {
+      "type": "number",
+      "minimum": -40.0,
+      "maximum": 200.0,
+      "description": "Temperatura do motor em graus Celsius."
+    },
+    "cargo_temp_c": {
+      "type": "number",
+      "minimum": -50.0,
+      "maximum": 80.0,
+      "description": "Temperatura do baú refrigerado em graus Celsius."
+    },
+    "fuel_level_pct": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 100.0,
+      "description": "Nível de combustível em percentual (0 a 100%)."
+    },
+    "odometer_km": {
+      "type": "number",
+      "minimum": 0.0,
+      "description": "Quilometragem total acumulada no hodômetro."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["MOVING", "IDLE", "STOPPED", "ALERT"],
+      "description": "Estado operacional reportado pelo veículo."
+    }
+  },
+  "examples": [
+    {
+      "event_id": "550e8400-e29b-41d4-a716-446655440000",
+      "truck_id": "TRK-0042",
+      "route_id": "SP-RJ-DUTRA",
+      "timestamp": "2026-11-08T14:45:10.123Z",
+      "location": {
+        "latitude": -23.55052,
+        "longitude": -46.633308,
+        "altitude_m": 760.0
+      },
+      "speed_kmh": 82.5,
+      "heading_deg": 68.4,
+      "engine_temp_c": 91.2,
+      "cargo_temp_c": -18.4,
+      "fuel_level_pct": 74.8,
+      "odometer_km": 145820.3,
+      "status": "MOVING"
+    }
+  ]
+}
+
