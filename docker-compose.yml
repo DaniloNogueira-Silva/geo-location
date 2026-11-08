@@ -1,0 +1,77 @@
+services:
+  # Emulador Cloud AWS Local (MiniStack na porta 4566)
+  ministack:
+    image: ministackorg/ministack:latest
+    container_name: geo-ministack
+    ports:
+      - "4566:4566"
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - SERVICES=kinesis,lambda,iam,sts,rds,elasticache,cloudwatch,logs,s3
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    restart: unless-stopped
+
+  # Amazon ElastiCache (Redis) - Visão em Tempo Real & Consultas Geoespaciais (GEOADD / GEOSEARCH)
+  redis:
+    image: redis:7.4-alpine
+    container_name: geo-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Amazon RDS (PostgreSQL) - Armazenamento Histórico & Playback de Rotas
+  postgres:
+    image: postgres:16-alpine
+    container_name: geo-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: fleet_admin
+      POSTGRES_PASSWORD: fleet_password
+      POSTGRES_DB: fleet_telemetry
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleet_admin -d fleet_telemetry"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Observabilidade: Grafana com Datasources (PostgreSQL + CloudWatch) e Mapa da Frota pré-provisionados
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: geo-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/fleet_telemetry.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ministack:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  postgres_data:
+  grafana_data:
