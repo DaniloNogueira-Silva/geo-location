@@ -1,92 +1,170 @@
-# 🚚 Sistema de Telemetria e Rastreamento de Frotas em Tempo Real
+# Real-Time Fleet Telemetry & Geospatial Tracking System (Go)
 
-Implementação completa da arquitetura de ingestão, streaming, armazenamento híbrido e observabilidade de telemetria de frotas em tempo real utilizando **Go**, **Amazon Kinesis**, **AWS Lambda**, **Amazon ElastiCache (Redis)**, **Amazon RDS (PostgreSQL)**, **Amazon CloudWatch**, **Grafana**, **MiniStack** e **Terraform**.
+An end-to-end, event-driven architecture for real-time fleet telemetry ingestion, streaming, hybrid geospatial/time-series storage, and live observability built with **Go**, **Amazon Kinesis**, **AWS Lambda**, **Amazon ElastiCache (Redis)**, **Amazon RDS (PostgreSQL)**, **Amazon CloudWatch**, **Grafana**, **MiniStack**, and **Terraform**.
 
 ---
 
-## 📂 Estrutura do Projeto
+## Key Engineering Highlights
+
+- **Out-of-Order & Stale Data Protection (Redis Lua `GEOADD`):** Atomic Lua scripts compare incoming GPS packet timestamps against the latest stored state, rejecting delayed 4G packets so vehicles never "jump backward in time" on the live map while supporting fast radius queries via `GEOSEARCH`.
+- **Idempotent Time-Series Persistence (`pgx.Batch`):** The AWS Lambda consumer processes Kinesis batches using `ON CONFLICT (event_id) DO NOTHING` to absorb Lambda retries and duplicate deliveries without data corruption, returning historical routes strictly ordered by original device timestamps.
+- **4G Signal-Drop Simulation & Offline Buffering:** A concurrent Go load simulator models 1,000+ trucks with configurable cellular dead zones, buffering telemetry locally with original timestamps and flushing via `POST /telemetry/batch` once connectivity returns.
+- **Domain & Physical Validation (WGS84):** Enforces strict coordinate bounds (`[-90, 90]`, `[-180, 180]`), rejects `(0,0)` null-island payloads, and validates physical limits for speed, fuel, and heading/azimuth.
+- **Full Local AWS Parity & Observability:** Runs completely locally using **MiniStack** (Kinesis, Lambda, CloudWatch) provisioned via **Terraform**, with an auto-provisioned **Grafana Geomap** dashboard for live fleet tracking.
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Fleet["Fleet Load Simulator (cmd/simulator)"]
+        Sim["1,000+ Concurrent Trucks\n(Goroutines + 4G Offline Buffer)"]
+    end
+
+    subgraph Edge["Ingestion Edge API (cmd/gateway)"]
+        Sim -->|"POST /telemetry\nPOST /telemetry/batch"| GW["Edge API Gateway (Go)"]
+        Client["API Clients / Dashboard"] -->|"GET /trucks/nearby\nGET /state & /history"| GW
+    end
+
+    subgraph Streaming["Streaming & Compute (MiniStack / AWS)"]
+        GW -->|"PutRecord / PutRecords"| Kinesis[("Amazon Kinesis\nData Stream")]
+        Kinesis -->|"Batch Trigger"| Lambda["AWS Lambda Consumer\n(cmd/lambda)"]
+    end
+
+    subgraph Storage["Hybrid Storage Layer"]
+        Lambda -->|"Atomic Lua GEOADD\n(Stale Timestamp Guard)"| Redis[("Amazon ElastiCache\nRedis Geospatial")]
+        Lambda -->|"Idempotent pgx.Batch\n(ON CONFLICT DO NOTHING)"| Postgres[("Amazon RDS\nPostgreSQL Time-Series")]
+        GW -.->|"GEOSEARCH / State"| Redis
+        GW -.->|"Historical Routes"| Postgres
+    end
+
+    subgraph Observability["Observability Stack"]
+        GW -->|"Ingestion Metrics"| CW["Amazon CloudWatch\n(Namespace: FleetTelemetry)"]
+        Lambda -->|"Batch Metrics"| CW
+        Grafana["Grafana (:3000)\nAuto-Provisioned Geomap Dashboard"] --> Postgres
+        Grafana --> CW
+    end
+
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| **Language** | Go | Edge API Gateway, AWS Lambda consumer, and concurrent load simulator |
+| **Streaming** | Amazon Kinesis (AWS SDK v2) | High-throughput ingestion buffer decoupling edge traffic from storage |
+| **Compute** | AWS Lambda | Batch stream consumer writing to Redis and PostgreSQL |
+| **Hot Geospatial Store** | Amazon ElastiCache (Redis) + Lua | Atomic `GEOADD` with timestamp guard and `GEOSEARCH` radius queries |
+| **Cold Time-Series Store** | Amazon RDS (PostgreSQL + `pgx`) | Idempotent batch inserts and ordered historical telemetry queries |
+| **Observability** | Amazon CloudWatch & Grafana | Custom `FleetTelemetry` metrics and auto-provisioned live Geomap dashboard |
+| **Infrastructure as Code** | Terraform & MiniStack | Local AWS emulation (`localhost:4566`) and reproducible resource provisioning |
+
+---
+
+## Project Structure
 
 ```text
 Geo-Location/
 ├── cmd/
 │   ├── gateway/
-│   │   ├── main.go              # API Edge (POST /telemetry, /telemetry/batch, GET /trucks/nearby, /state, /history)
-│   │   └── main_test.go         # Teste real ponta a ponta da API Gateway + Kinesis + Redis + Postgres
+│   │   ├── main.go              # Edge API (POST /telemetry, /telemetry/batch, GET /trucks/nearby, /state, /history)
+│   │   └── main_test.go         # End-to-end integration test (Gateway + Kinesis + Redis + PostgreSQL)
 │   ├── lambda/
-│   │   ├── main.go              # AWS Lambda Consumer (Lotes Kinesis -> Redis GEOADD + Postgres Batch Insert)
-│   │   └── main_test.go         # Teste real do handler AWS Lambda com eventos atrasados e registros corrompidos
+│   │   ├── main.go              # AWS Lambda Consumer (Kinesis batches -> Redis GEOADD + PostgreSQL Batch Insert)
+│   │   └── main_test.go         # AWS Lambda handler tests with late-arriving events and corrupted records
 │   └── simulator/
-│       ├── main.go              # Simulador de Carga (Goroutines + Buffer de queda de sinal 4G)
-│       └── main_test.go         # Testes de cinemática, azimute e envio em lote pós-queda de 4G
+│       ├── main.go              # Load Simulator (Goroutines + 4G signal-drop offline buffer)
+│       └── main_test.go         # Kinematics, heading/azimuth, and post-outage batch flush tests
 ├── internal/
-│   ├── config/                  # Configurações centralizadas via variáveis de ambiente (+ testes)
-│   ├── domain/                  # Structs de telemetria e regras de validação WGS84 (+ testes)
-│   ├── kinesis/                 # Cliente AWS SDK v2 para Kinesis (+ testes reais no MiniStack)
-│   ├── observability/           # Publicador de métricas no Amazon CloudWatch (+ testes reais no MiniStack)
+│   ├── config/                  # Centralized environment-based configuration (+ tests)
+│   ├── domain/                  # Telemetry structs & WGS84 physical validation rules (+ tests)
+│   ├── kinesis/                 # AWS SDK v2 Kinesis client (+ real MiniStack integration tests)
+│   ├── observability/           # Amazon CloudWatch metrics publisher (+ real MiniStack integration tests)
 │   └── storage/
-│       ├── redis.go             # GEOADD atômico via Lua Script + GEOSEARCH por raio (+ testes reais no Redis)
-│       └── postgres.go          # Batch Insert idempotente (pgx.Batch) e histórico (+ testes reais no Postgres)
+│       ├── redis.go             # Atomic GEOADD via Lua Script + radius GEOSEARCH (+ real Redis tests)
+│       └── postgres.go          # Idempotent batch insert (pgx.Batch) & time-series history (+ real Postgres tests)
 ├── observability/
-│   └── grafana/                 # Provisionamento automático de Datasources e Dashboard com Mapa (Geomap)
-├── infra/                       # Scripts Terraform apontando para o MiniStack (localhost:4566)
+│   └── grafana/                 # Auto-provisioned Datasources & Real-Time Geomap Dashboard
+├── infra/                       # Terraform IaC targeting MiniStack (localhost:4566)
 ├── docs/
-│   └── telemetry_schema.json    # JSON Schema (Draft 2020-12) do payload de telemetria
+│   └── telemetry_schema.json    # JSON Schema (Draft 2020-12) for telemetry payloads
 ├── sql/
-│   └── init.sql                 # DDL e índices de série temporal do PostgreSQL
+│   └── init.sql                 # PostgreSQL DDL & time-series indexes
 ├── scripts/
-│   ├── build-lambda.ps1         # Compila binário Linux 'bootstrap' e empacota build/lambda_function.zip
-│   └── terraform-apply.ps1      # Executa Terraform (local ou via Docker hashicorp/terraform) no MiniStack
-└── docker-compose.yml           # MiniStack (4566), Redis (6379), PostgreSQL (5432) e Grafana (3000)
+│   ├── build-lambda.ps1         # Builds Linux 'bootstrap' binary and packages build/lambda_function.zip
+│   └── terraform-apply.ps1      # Runs Terraform (local or via hashicorp/terraform Docker image) against MiniStack
+└── docker-compose.yml           # MiniStack (4566), Redis (6379), PostgreSQL (5432), and Grafana (3000)
+
 ```
 
 ---
 
-## 🚀 Como Executar Ponta a Ponta
+## Getting Started (End-to-End Execution)
 
-### 1. Subir a Infraestrutura Local (Docker Compose)
+### 1. Start Local Infrastructure (Docker Compose)
+
 ```powershell
 docker compose up -d
+
 ```
-Serviços disponíveis:
-* **MiniStack (AWS Local):** `http://localhost:4566`
-* **Grafana (Dashboard & Mapa em Tempo Real):** `http://localhost:3000` (acesso direto sem senha ou `admin` / `admin`)
+
+Available services:
+
+* **MiniStack (Local AWS):** `http://localhost:4566`
+* **Grafana (Real-Time Dashboard & Geomap):** `http://localhost:3000` (anonymous access or `admin` / `admin`)
 * **Redis (ElastiCache):** `localhost:6379`
 * **PostgreSQL (RDS):** `localhost:5432`
 
-### 2. Provisionar Recursos no MiniStack via Terraform
-Mesmo que você não tenha o binário `terraform` instalado no Windows, o script abaixo compila o pacote da Lambda e executa o Terraform automaticamente via container Docker:
+### 2. Provision AWS Resources on MiniStack via Terraform
+
+Even without the `terraform` binary installed locally on Windows, the script below compiles the Linux Lambda package (`bootstrap`) and executes Terraform automatically via Docker:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\terraform-apply.ps1
+
 ```
 
-### 3. Iniciar o Gateway de Ingestão (API Edge)
+### 3. Start the Ingestion Edge API Gateway
+
 ```powershell
 go run ./cmd/gateway
+
 ```
 
-### 4. Iniciar o Consumidor AWS Lambda / Worker do Kinesis
+### 4. Start the AWS Lambda / Kinesis Consumer Worker
+
 ```powershell
 go run ./cmd/lambda
+
 ```
 
-### 5. Iniciar o Simulador de Carga (Goroutines + Simulação de Queda 4G)
+### 5. Run the Load Simulator (Goroutines + 4G Outage Simulation)
+
 ```powershell
-# Simula 1000 caminhões a cada 2s com 5% de chance de entrar em zona sem sinal 4G e acumular lote
+# Simulates 1,000 trucks every 2s with a 5% probability of entering a 4G dead zone and buffering batches
 go run ./cmd/simulator -trucks=1000 -interval=2s -offline-prob=0.05
+
 ```
 
 ---
 
-## 🧪 Executando a Suíte de Testes Reais (Unitários + Integração)
+## Running the Test Suite (Unit + Real Integration Tests)
 
-Com os containers do `docker compose` ativos, execute:
+With the `docker compose` containers running, execute:
+
 ```powershell
 go test -v ./...
+
 ```
-O que os testes validam na prática:
-* **Domínio & Limites Físicos (`internal/domain`)**: Limites WGS84 (`[-90, 90]`, `[-180, 180]`), rejeição de coordenada `(0,0)`, limites de combustível, velocidade e azimute.
-* **Proteção contra Dados Atrasados no Redis (`internal/storage/redis_test.go`)**: Comprova que o script Lua no Redis rejeita pacotes com `timestamp` anterior ao estado atual (impedindo que um pacote 4G atrasado faça o caminhão "voltar no tempo" no mapa em tempo real) e valida a precisão espacial do `GEOSEARCH` em raios de 5 km e 25 km.
-* **Ordenação e Idempotência no PostgreSQL (`internal/storage/postgres_test.go`)**: Envia lotes fora de ordem e duplicados (simulando retries da AWS Lambda) e comprova que `ON CONFLICT (event_id) DO NOTHING` evita duplicatas e que a leitura retorna a série temporal ordenada pelo `timestamp` gerado no caminhão.
-* **Streaming no MiniStack Kinesis (`internal/kinesis/client_test.go`)**: Cria stream real no MiniStack, publica via `PutRecord` e `PutRecords` e lê diretamente do Shard via `GetShardIterator` + `GetRecords`.
-* **Métricas no MiniStack CloudWatch (`internal/observability/cloudwatch_test.go`)**: Publica métricas reais de ingestão e processamento em lote e valida via `ListMetrics` no namespace `FleetTelemetry`.
-* **Queda de Sinal 4G no Simulador (`cmd/simulator/main_test.go`)**: Comprova que durante a perda de sinal 4G o caminhão armazena os eventos em buffer preservando o `timestamp` original de cada coleta e descarrega tudo de uma vez em `POST /telemetry/batch` assim que o sinal retorna.
+
+What the suite validates in practice:
+
+* **Domain & Physical Constraints (`internal/domain`):** WGS84 coordinate bounds (`[-90, 90]`, `[-180, 180]`), rejection of `(0,0)` null-island coordinates, and valid physical ranges for fuel, speed, and heading/azimuth.
+* **Stale & Out-of-Order Data Protection in Redis (`internal/storage/redis_test.go`):** Verifies that the Redis Lua script rejects packets with a `timestamp` older than the currently stored state (preventing delayed 4G packets from making a truck jump backward on the live map) and validates `GEOSEARCH` spatial accuracy across 5 km and 25 km radii.
+* **Ordering & Idempotency in PostgreSQL (`internal/storage/postgres_test.go`):** Sends out-of-order and duplicated batches (simulating AWS Lambda retries) to verify that `ON CONFLICT (event_id) DO NOTHING` prevents duplicates and that queries return the time series strictly ordered by the truck's original `timestamp`.
+* **Kinesis Streaming on MiniStack (`internal/kinesis/client_test.go`):** Creates a real stream on MiniStack, publishes via `PutRecord` and `PutRecords`, and reads directly from the Shard via `GetShardIterator` + `GetRecords`.
+* **CloudWatch Metrics on MiniStack (`internal/observability/cloudwatch_test.go`):** Publishes real ingestion and batch-processing metrics and verifies them via `ListMetrics` under the `FleetTelemetry` namespace.
+* **4G Signal-Drop Buffering (`cmd/simulator/main_test.go`):** Verifies that during a 4G outage, trucks buffer telemetry events locally while preserving each event's original collection timestamp and flush the full batch to `POST /telemetry/batch` once connectivity is restored.
